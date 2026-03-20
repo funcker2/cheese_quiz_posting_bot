@@ -27,6 +27,7 @@ class PostForm(StatesGroup):
     waiting_photo = State()
     waiting_more_photo = State()
     waiting_text = State()
+    waiting_button_choice = State()
     preview = State()
     choosing_channel = State()
     edit_photo = State()
@@ -53,13 +54,15 @@ def channel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def preview_keyboard() -> InlineKeyboardMarkup:
+def preview_keyboard(has_button: bool) -> InlineKeyboardMarkup:
+    toggle_text = "🔘 Убрать кнопку записи" if has_button else "🔘 Добавить кнопку записи"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Опубликовать", callback_data="publish")],
         [
             InlineKeyboardButton(text="🖼 Изменить фото", callback_data="edit_photo"),
             InlineKeyboardButton(text="✏️ Изменить текст", callback_data="edit_text"),
         ],
+        [InlineKeyboardButton(text=toggle_text, callback_data="toggle_button")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
     ])
 
@@ -71,11 +74,21 @@ def more_photo_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def button_choice_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, добавить кнопку", callback_data="btn_yes")],
+        [InlineKeyboardButton(text="❌ Нет, без кнопки", callback_data="btn_no")],
+    ])
+
+
 async def send_preview(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     photos = data["photos"]
     text = data["post_text"]
     entities = data.get("post_entities")
+    has_button = data.get("include_button", False)
+
+    reply_markup = signup_keyboard() if has_button else None
 
     await message.answer("👁 Предпросмотр поста:")
 
@@ -84,7 +97,7 @@ async def send_preview(message: Message, state: FSMContext) -> None:
             photo=photos[0],
             caption=text,
             caption_entities=entities,
-            reply_markup=signup_keyboard(),
+            reply_markup=reply_markup,
         )
     else:
         media = [
@@ -96,9 +109,11 @@ async def send_preview(message: Message, state: FSMContext) -> None:
             InputMediaPhoto(media=photos[1]),
         ]
         await message.answer_media_group(media=media)
-        await message.answer("Кнопка будет добавлена к посту при публикации.")
+        if has_button:
+            await message.answer("Кнопка будет добавлена к посту при публикации.")
 
-    await message.answer("Что делаем?", reply_markup=preview_keyboard())
+    btn_status = "с кнопкой записи" if has_button else "без кнопки записи"
+    await message.answer(f"Пост {btn_status}. Что делаем?", reply_markup=preview_keyboard(has_button))
     await state.set_state(PostForm.preview)
 
 
@@ -106,6 +121,9 @@ async def publish_post(channel_id: str, data: dict) -> None:
     photos = data["photos"]
     text = data["post_text"]
     entities = data.get("post_entities")
+    has_button = data.get("include_button", False)
+
+    reply_markup = signup_keyboard() if has_button else None
 
     if len(photos) == 1:
         await bot.send_photo(
@@ -113,7 +131,7 @@ async def publish_post(channel_id: str, data: dict) -> None:
             photo=photos[0],
             caption=text,
             caption_entities=entities,
-            reply_markup=signup_keyboard(),
+            reply_markup=reply_markup,
         )
     else:
         media = [
@@ -125,11 +143,12 @@ async def publish_post(channel_id: str, data: dict) -> None:
             InputMediaPhoto(media=photos[1]),
         ]
         await bot.send_media_group(chat_id=channel_id, media=media)
-        await bot.send_message(
-            chat_id=channel_id,
-            text="\u200b",
-            reply_markup=signup_keyboard(),
-        )
+        if has_button:
+            await bot.send_message(
+                chat_id=channel_id,
+                text="\u200b",
+                reply_markup=signup_keyboard(),
+            )
 
 
 # ── /start ──────────────────────────────────────────────
@@ -232,7 +251,11 @@ async def on_text(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
     await state.update_data(post_text=message.text, post_entities=message.entities)
-    await send_preview(message, state)
+    await message.answer(
+        f"Добавить кнопку «{cfg.button_text}» к посту?",
+        reply_markup=button_choice_keyboard(),
+    )
+    await state.set_state(PostForm.waiting_button_choice)
 
 
 @router.message(PostForm.waiting_text)
@@ -240,6 +263,26 @@ async def on_text_invalid(message: Message) -> None:
     if not is_admin(message.from_user.id):
         return
     await message.answer("Нужен текст. Отправь текстовое сообщение:")
+
+
+# ── Шаг 3: выбор кнопки ────────────────────────────────
+
+@router.callback_query(PostForm.waiting_button_choice, F.data == "btn_yes")
+async def on_button_yes(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    await state.update_data(include_button=True)
+    await send_preview(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(PostForm.waiting_button_choice, F.data == "btn_no")
+async def on_button_no(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    await state.update_data(include_button=False)
+    await send_preview(callback.message, state)
+    await callback.answer()
 
 
 # ── Предпросмотр: кнопки ───────────────────────────────
@@ -276,8 +319,22 @@ async def on_channel_chosen(callback: CallbackQuery, state: FSMContext) -> None:
 async def on_back_to_preview(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
         return
-    await callback.message.answer("Что делаем?", reply_markup=preview_keyboard())
+    data = await state.get_data()
+    has_button = data.get("include_button", False)
+    btn_status = "с кнопкой записи" if has_button else "без кнопки записи"
+    await callback.message.answer(f"Пост {btn_status}. Что делаем?", reply_markup=preview_keyboard(has_button))
     await state.set_state(PostForm.preview)
+    await callback.answer()
+
+
+@router.callback_query(PostForm.preview, F.data == "toggle_button")
+async def on_toggle_button(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    data = await state.get_data()
+    new_value = not data.get("include_button", False)
+    await state.update_data(include_button=new_value)
+    await send_preview(callback.message, state)
     await callback.answer()
 
 
