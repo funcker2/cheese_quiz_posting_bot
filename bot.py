@@ -9,6 +9,7 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
     Message,
 )
 
@@ -24,10 +25,12 @@ router = Router()
 
 class PostForm(StatesGroup):
     waiting_photo = State()
+    waiting_more_photo = State()
     waiting_text = State()
     preview = State()
     choosing_channel = State()
     edit_photo = State()
+    edit_more_photo = State()
     edit_text = State()
 
 
@@ -61,21 +64,72 @@ def preview_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def more_photo_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📸 Добавить ещё фото", callback_data="add_more_photo")],
+        [InlineKeyboardButton(text="✏️ Перейти к тексту", callback_data="go_to_text")],
+    ])
+
+
 async def send_preview(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
-    photo_id = data["photo_id"]
+    photos = data["photos"]
     text = data["post_text"]
     entities = data.get("post_entities")
 
     await message.answer("👁 Предпросмотр поста:")
-    await message.answer_photo(
-        photo=photo_id,
-        caption=text,
-        caption_entities=entities,
-        reply_markup=signup_keyboard(),
-    )
+
+    if len(photos) == 1:
+        await message.answer_photo(
+            photo=photos[0],
+            caption=text,
+            caption_entities=entities,
+            reply_markup=signup_keyboard(),
+        )
+    else:
+        media = [
+            InputMediaPhoto(
+                media=photos[0],
+                caption=text,
+                caption_entities=entities,
+            ),
+            InputMediaPhoto(media=photos[1]),
+        ]
+        await message.answer_media_group(media=media)
+        await message.answer("👆 Кнопка будет добавлена к посту при публикации.")
+
     await message.answer("Что делаем?", reply_markup=preview_keyboard())
     await state.set_state(PostForm.preview)
+
+
+async def publish_post(channel_id: str, data: dict) -> None:
+    photos = data["photos"]
+    text = data["post_text"]
+    entities = data.get("post_entities")
+
+    if len(photos) == 1:
+        await bot.send_photo(
+            chat_id=channel_id,
+            photo=photos[0],
+            caption=text,
+            caption_entities=entities,
+            reply_markup=signup_keyboard(),
+        )
+    else:
+        media = [
+            InputMediaPhoto(
+                media=photos[0],
+                caption=text,
+                caption_entities=entities,
+            ),
+            InputMediaPhoto(media=photos[1]),
+        ]
+        await bot.send_media_group(chat_id=channel_id, media=media)
+        await bot.send_message(
+            chat_id=channel_id,
+            text="👇",
+            reply_markup=signup_keyboard(),
+        )
 
 
 # ── /start ──────────────────────────────────────────────
@@ -97,7 +151,7 @@ async def cmd_newpost(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
     await state.clear()
-    await message.answer("📸 Отправь фото для поста:")
+    await message.answer("📸 Отправь фото для поста (можно 1 или 2):")
     await state.set_state(PostForm.waiting_photo)
 
 
@@ -111,19 +165,19 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
     await message.answer("Отменено. /newpost — начать заново.")
 
 
-# ── Шаг 1: получаем фото ───────────────────────────────
+# ── Шаг 1: получаем первое фото ────────────────────────
 
 @router.message(PostForm.waiting_photo, F.photo)
 async def on_photo(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
     photo_id = message.photo[-1].file_id
-    await state.update_data(photo_id=photo_id)
+    await state.update_data(photos=[photo_id])
     await message.answer(
-        "✏️ Теперь отправь текст поста.\n"
-        "Можно использовать форматирование: жирный, курсив, подчёркнутый, зачёркнутый, ссылки, эмодзи."
+        "✅ Фото получено (1 из 2).",
+        reply_markup=more_photo_keyboard(),
     )
-    await state.set_state(PostForm.waiting_text)
+    await state.set_state(PostForm.waiting_more_photo)
 
 
 @router.message(PostForm.waiting_photo)
@@ -131,6 +185,44 @@ async def on_photo_invalid(message: Message) -> None:
     if not is_admin(message.from_user.id):
         return
     await message.answer("Нужно именно фото. Отправь изображение:")
+
+
+# ── Шаг 1.5: второе фото или переход к тексту ──────────
+
+@router.callback_query(PostForm.waiting_more_photo, F.data == "add_more_photo")
+async def on_add_more_photo(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    await callback.message.answer("📸 Отправь второе фото:")
+    await callback.answer()
+
+
+@router.message(PostForm.waiting_more_photo, F.photo)
+async def on_second_photo(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    photos = data["photos"]
+    photos.append(message.photo[-1].file_id)
+    await state.update_data(photos=photos)
+    await message.answer(
+        "✅ Фото получено (2 из 2).\n\n"
+        "✏️ Теперь отправь текст поста.\n"
+        "Можно использовать форматирование: жирный, курсив, подчёркнутый, зачёркнутый, ссылки, эмодзи."
+    )
+    await state.set_state(PostForm.waiting_text)
+
+
+@router.callback_query(PostForm.waiting_more_photo, F.data == "go_to_text")
+async def on_go_to_text(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    await callback.message.answer(
+        "✏️ Отправь текст поста.\n"
+        "Можно использовать форматирование: жирный, курсив, подчёркнутый, зачёркнутый, ссылки, эмодзи."
+    )
+    await state.set_state(PostForm.waiting_text)
+    await callback.answer()
 
 
 # ── Шаг 2: получаем текст ──────────────────────────────
@@ -170,13 +262,7 @@ async def on_channel_chosen(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
 
     try:
-        await bot.send_photo(
-            chat_id=channel.id,
-            photo=data["photo_id"],
-            caption=data["post_text"],
-            caption_entities=data.get("post_entities"),
-            reply_markup=signup_keyboard(),
-        )
+        await publish_post(channel.id, data)
         await callback.message.answer(f"✅ Пост опубликован в {channel.label}!")
     except Exception as e:
         log.exception("Failed to publish post to %s", channel.id)
@@ -199,7 +285,7 @@ async def on_back_to_preview(callback: CallbackQuery, state: FSMContext) -> None
 async def on_edit_photo(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
         return
-    await callback.message.answer("📸 Отправь новое фото:")
+    await callback.message.answer("📸 Отправь новое фото (начнём заново, 1 или 2):")
     await state.set_state(PostForm.edit_photo)
     await callback.answer()
 
@@ -225,19 +311,50 @@ async def on_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 # ── Редактирование фото ────────────────────────────────
 
 @router.message(PostForm.edit_photo, F.photo)
-async def on_new_photo(message: Message, state: FSMContext) -> None:
+async def on_edit_first_photo(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
     photo_id = message.photo[-1].file_id
-    await state.update_data(photo_id=photo_id)
-    await send_preview(message, state)
+    await state.update_data(photos=[photo_id])
+    await message.answer(
+        "✅ Фото получено (1 из 2).",
+        reply_markup=more_photo_keyboard(),
+    )
+    await state.set_state(PostForm.edit_more_photo)
 
 
 @router.message(PostForm.edit_photo)
-async def on_new_photo_invalid(message: Message) -> None:
+async def on_edit_photo_invalid(message: Message) -> None:
     if not is_admin(message.from_user.id):
         return
     await message.answer("Нужно фото. Отправь изображение:")
+
+
+@router.callback_query(PostForm.edit_more_photo, F.data == "add_more_photo")
+async def on_edit_add_more_photo(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    await callback.message.answer("📸 Отправь второе фото:")
+    await callback.answer()
+
+
+@router.message(PostForm.edit_more_photo, F.photo)
+async def on_edit_second_photo(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    photos = data["photos"]
+    photos.append(message.photo[-1].file_id)
+    await state.update_data(photos=photos)
+    await send_preview(message, state)
+
+
+@router.callback_query(PostForm.edit_more_photo, F.data == "go_to_text")
+async def on_edit_go_to_preview(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    await send_preview(callback.message, state)
+    await callback.answer()
 
 
 # ── Редактирование текста ───────────────────────────────
