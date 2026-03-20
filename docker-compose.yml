@@ -1,0 +1,7 @@
+services:
+  posting_bot:
+    build: .
+    container_name: cheese_quiz_posting_bot
+    restart: unless-stopped
+    env_file:
+      - .env
