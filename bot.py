@@ -2,7 +2,6 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.enums import ParseMode
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -66,12 +65,13 @@ async def send_preview(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     photo_id = data["photo_id"]
     text = data["post_text"]
+    entities = data.get("post_entities")
 
     await message.answer("👁 Предпросмотр поста:")
     await message.answer_photo(
         photo=photo_id,
         caption=text,
-        parse_mode=ParseMode.HTML,
+        caption_entities=entities,
         reply_markup=signup_keyboard(),
     )
     await message.answer("Что делаем?", reply_markup=preview_keyboard())
@@ -119,7 +119,10 @@ async def on_photo(message: Message, state: FSMContext) -> None:
         return
     photo_id = message.photo[-1].file_id
     await state.update_data(photo_id=photo_id)
-    await message.answer("✏️ Теперь отправь текст поста (можно использовать HTML-разметку):")
+    await message.answer(
+        "✏️ Теперь отправь текст поста.\n"
+        "Можно использовать форматирование: жирный, курсив, подчёркнутый, зачёркнутый, ссылки, эмодзи."
+    )
     await state.set_state(PostForm.waiting_text)
 
 
@@ -136,7 +139,7 @@ async def on_photo_invalid(message: Message) -> None:
 async def on_text(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
-    await state.update_data(post_text=message.text)
+    await state.update_data(post_text=message.text, post_entities=message.entities)
     await send_preview(message, state)
 
 
@@ -171,7 +174,7 @@ async def on_channel_chosen(callback: CallbackQuery, state: FSMContext) -> None:
             chat_id=channel.id,
             photo=data["photo_id"],
             caption=data["post_text"],
-            parse_mode=ParseMode.HTML,
+            caption_entities=data.get("post_entities"),
             reply_markup=signup_keyboard(),
         )
         await callback.message.answer(f"✅ Пост опубликован в {channel.label}!")
@@ -243,7 +246,7 @@ async def on_new_photo_invalid(message: Message) -> None:
 async def on_new_text(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
-    await state.update_data(post_text=message.text)
+    await state.update_data(post_text=message.text, post_entities=message.entities)
     await send_preview(message, state)
 
 
