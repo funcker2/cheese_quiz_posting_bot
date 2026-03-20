@@ -96,7 +96,7 @@ async def send_preview(message: Message, state: FSMContext) -> None:
             InputMediaPhoto(media=photos[1]),
         ]
         await message.answer_media_group(media=media)
-        await message.answer("👆 Кнопка будет добавлена к посту при публикации.")
+        await message.answer("Кнопка будет добавлена к посту при публикации.")
 
     await message.answer("Что делаем?", reply_markup=preview_keyboard())
     await state.set_state(PostForm.preview)
@@ -127,7 +127,7 @@ async def publish_post(channel_id: str, data: dict) -> None:
         await bot.send_media_group(chat_id=channel_id, media=media)
         await bot.send_message(
             chat_id=channel_id,
-            text="👇",
+            text="\u200b",
             reply_markup=signup_keyboard(),
         )
 
