@@ -43,7 +43,7 @@ class PostForm(StatesGroup):
 PROJECTS = {
     "cheese": {"label": "🧀 CHEESE QUIZ",  "button_text": cfg.button_text, "url": cfg.signup_bot_url, "channels": cfg.channels},
     "sunny":  {"label": "☀️ SUNNY NIGHTS", "button_text": "РЕГИСТРАЦИЯ",   "url": None,               "channels": cfg.channels_sunny},
-    "harry":  {"label": "🧙 HarryPotter",  "button_text": "РЕГИСТРАЦИЯ",   "url": None,               "channels": cfg.channels_harry},
+    "harry":  {"label": "🧙 HarryPotter",  "button_text": cfg.button_text, "url": cfg.signup_bot_url, "channels": cfg.channels_harry},
 }
 
 
