@@ -107,6 +107,10 @@ def _build_reply_markup(data: dict) -> InlineKeyboardMarkup | None:
     return signup_keyboard(data["btn_text"], data["btn_url"])
 
 
+_CAPTION_LIMIT_SINGLE = 4096   # Telegram limit for single photo
+_CAPTION_LIMIT_GROUP  = 1024   # Telegram limit for media group
+
+
 async def send_preview(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     photos = data["photos"]
@@ -115,44 +119,35 @@ async def send_preview(message: Message, state: FSMContext) -> None:
     has_button = data.get("include_button", False)
 
     reply_markup = _build_reply_markup(data)
-    caption_fits = len(text) <= 1024
 
     await message.answer("👁 Предпросмотр поста:")
 
     if len(photos) == 1:
-        if caption_fits:
+        await message.answer_photo(
+            photo=photos[0],
+            caption=text,
+            caption_entities=entities,
+            reply_markup=reply_markup,
+        )
+    else:
+        if len(text) <= _CAPTION_LIMIT_GROUP:
+            media = [
+                InputMediaPhoto(media=photos[0], caption=text, caption_entities=entities),
+                InputMediaPhoto(media=photos[1]),
+            ]
+            await message.answer_media_group(media=media)
+        else:
+            # Text > 1024: attach to first photo as single, send second separately
             await message.answer_photo(
                 photo=photos[0],
                 caption=text,
                 caption_entities=entities,
                 reply_markup=reply_markup,
             )
-        else:
-            await message.answer_photo(photo=photos[0])
-            await message.answer(
-                text=text,
-                entities=entities,
-                reply_markup=reply_markup,
-            )
-    else:
-        if caption_fits:
-            media = [
-                InputMediaPhoto(
-                    media=photos[0],
-                    caption=text,
-                    caption_entities=entities,
-                ),
-                InputMediaPhoto(media=photos[1]),
-            ]
-        else:
-            media = [
-                InputMediaPhoto(media=photos[0]),
-                InputMediaPhoto(media=photos[1]),
-            ]
-        await message.answer_media_group(media=media)
-        if not caption_fits:
-            await message.answer(text=text, entities=entities)
-        if has_button:
+            await message.answer_photo(photo=photos[1])
+            reply_markup = None  # already attached above
+
+        if has_button and reply_markup is not None:
             await message.answer("Кнопка будет добавлена к посту при публикации.")
 
     btn_status = "с кнопкой записи" if has_button else "без кнопки записи"
@@ -167,10 +162,26 @@ async def publish_post(channel_id: str, data: dict) -> None:
     has_button = data.get("include_button", False)
 
     reply_markup = _build_reply_markup(data)
-    caption_fits = len(text) <= 1024
 
     if len(photos) == 1:
-        if caption_fits:
+        await bot.send_photo(
+            chat_id=channel_id,
+            photo=photos[0],
+            caption=text,
+            caption_entities=entities,
+            reply_markup=reply_markup,
+        )
+    else:
+        if len(text) <= _CAPTION_LIMIT_GROUP:
+            media = [
+                InputMediaPhoto(media=photos[0], caption=text, caption_entities=entities),
+                InputMediaPhoto(media=photos[1]),
+            ]
+            await bot.send_media_group(chat_id=channel_id, media=media)
+            if has_button:
+                await bot.send_message(chat_id=channel_id, text="\u200b", reply_markup=reply_markup)
+        else:
+            # Text > 1024: attach to first photo as single, send second separately
             await bot.send_photo(
                 chat_id=channel_id,
                 photo=photos[0],
@@ -178,43 +189,7 @@ async def publish_post(channel_id: str, data: dict) -> None:
                 caption_entities=entities,
                 reply_markup=reply_markup,
             )
-        else:
-            await bot.send_photo(chat_id=channel_id, photo=photos[0])
-            await bot.send_message(
-                chat_id=channel_id,
-                text=text,
-                entities=entities,
-                reply_markup=reply_markup,
-            )
-    else:
-        if caption_fits:
-            media = [
-                InputMediaPhoto(
-                    media=photos[0],
-                    caption=text,
-                    caption_entities=entities,
-                ),
-                InputMediaPhoto(media=photos[1]),
-            ]
-        else:
-            media = [
-                InputMediaPhoto(media=photos[0]),
-                InputMediaPhoto(media=photos[1]),
-            ]
-        await bot.send_media_group(chat_id=channel_id, media=media)
-        if not caption_fits:
-            await bot.send_message(
-                chat_id=channel_id,
-                text=text,
-                entities=entities,
-                reply_markup=reply_markup,
-            )
-        elif has_button:
-            await bot.send_message(
-                chat_id=channel_id,
-                text="\u200b",
-                reply_markup=reply_markup,
-            )
+            await bot.send_photo(chat_id=channel_id, photo=photos[1])
 
 
 # ── /start ──────────────────────────────────────────────
