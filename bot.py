@@ -16,7 +16,7 @@ from aiogram.types import (
 )
 
 from config import Config
-from post_layout import CaptionMode, plan_post_layout
+from post_layout import CaptionMode, plan_post_layout, split_preview_notice
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -185,6 +185,10 @@ async def send_preview(message: Message, state: FSMContext) -> None:
             "❌ Не удалось собрать превью. Попробуй ещё раз или /cancel."
         )
         return
+
+    notice = split_preview_notice(text)
+    if notice:
+        await message.answer(notice)
 
     btn_status = "с кнопкой записи" if has_button else "без кнопки записи"
     await message.answer(f"Пост {btn_status}. Что делаем?", reply_markup=preview_keyboard(has_button))
