@@ -49,4 +49,4 @@ Adding a new project: add `CHANNELS_<NAME>` to `.env`, add `channels_<name>` fie
 4. Choose whether to add a signup button
 5. Preview → publish to channel (or edit photo/text first)
 
-**Grouping rule:** text is always attached as caption to the photo, never sent as a separate message. Single photo supports up to 4096 chars; media group (2 photos) up to 1024 — if longer, first photo gets caption and second is sent separately.
+**Grouping rule:** photo(s) first, then text. If the text fits in a Telegram caption (≤1024 UTF-16 chars), it is glued onto the photo/album. If longer, photos are sent first and the text (with the signup button, if any) goes as the next message. Media groups cannot carry an inline button, so the button is attached to a follow-up message.

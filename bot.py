@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -15,6 +16,7 @@ from aiogram.types import (
 )
 
 from config import Config
+from post_layout import CaptionMode, plan_post_layout
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -107,8 +109,53 @@ def _build_reply_markup(data: dict) -> InlineKeyboardMarkup | None:
     return signup_keyboard(data["btn_text"], data["btn_url"])
 
 
-_CAPTION_LIMIT_SINGLE = 4096   # Telegram limit for single photo
-_CAPTION_LIMIT_GROUP  = 1024   # Telegram limit for media group
+async def emit_post(
+    *,
+    photos: list,
+    text: str,
+    entities,
+    has_button: bool,
+    reply_markup: InlineKeyboardMarkup | None,
+    send_photo,
+    send_media_group,
+    send_message,
+    is_preview: bool,
+) -> None:
+    """Glue photo+text into one Telegram message when caption fits (≤1024).
+
+    Longer text cannot be a photo caption, so photos go first and the text
+    (with the signup button, if any) is sent as the next message.
+    """
+    layout = plan_post_layout(n_photos=len(photos), text=text, has_button=has_button)
+    media_markup = reply_markup if layout.button_on == "media" else None
+    text_markup = reply_markup if layout.button_on == "text" else None
+
+    if layout.caption_mode is CaptionMode.GLUE:
+        if len(photos) == 1:
+            await send_photo(
+                photo=photos[0],
+                caption=text,
+                caption_entities=entities,
+                reply_markup=media_markup,
+            )
+        else:
+            media = [
+                InputMediaPhoto(media=photos[0], caption=text, caption_entities=entities),
+                *[InputMediaPhoto(media=p) for p in photos[1:]],
+            ]
+            await send_media_group(media=media)
+            if layout.button_on == "followup":
+                if is_preview:
+                    await send_message(text="Кнопка будет добавлена к посту при публикации.")
+                else:
+                    await send_message(text="\u200b", reply_markup=reply_markup)
+        return
+
+    if len(photos) == 1:
+        await send_photo(photo=photos[0])
+    else:
+        await send_media_group(media=[InputMediaPhoto(media=p) for p in photos])
+    await send_message(text=text, entities=entities, reply_markup=text_markup)
 
 
 async def send_preview(message: Message, state: FSMContext) -> None:
@@ -117,38 +164,27 @@ async def send_preview(message: Message, state: FSMContext) -> None:
     text = data["post_text"]
     entities = data.get("post_entities")
     has_button = data.get("include_button", False)
-
     reply_markup = _build_reply_markup(data)
 
     await message.answer("👁 Предпросмотр поста:")
-
-    if len(photos) == 1:
-        await message.answer_photo(
-            photo=photos[0],
-            caption=text,
-            caption_entities=entities,
+    try:
+        await emit_post(
+            photos=photos,
+            text=text,
+            entities=entities,
+            has_button=has_button,
             reply_markup=reply_markup,
+            send_photo=message.answer_photo,
+            send_media_group=message.answer_media_group,
+            send_message=message.answer,
+            is_preview=True,
         )
-    else:
-        if len(text) <= _CAPTION_LIMIT_GROUP:
-            media = [
-                InputMediaPhoto(media=photos[0], caption=text, caption_entities=entities),
-                InputMediaPhoto(media=photos[1]),
-            ]
-            await message.answer_media_group(media=media)
-        else:
-            # Text > 1024: attach to first photo as single, send second separately
-            await message.answer_photo(
-                photo=photos[0],
-                caption=text,
-                caption_entities=entities,
-                reply_markup=reply_markup,
-            )
-            await message.answer_photo(photo=photos[1])
-            reply_markup = None  # already attached above
-
-        if has_button and reply_markup is not None:
-            await message.answer("Кнопка будет добавлена к посту при публикации.")
+    except TelegramBadRequest:
+        log.exception("Failed to send preview")
+        await message.answer(
+            "❌ Не удалось собрать превью. Попробуй ещё раз или /cancel."
+        )
+        return
 
     btn_status = "с кнопкой записи" if has_button else "без кнопки записи"
     await message.answer(f"Пост {btn_status}. Что делаем?", reply_markup=preview_keyboard(has_button))
@@ -160,36 +196,28 @@ async def publish_post(channel_id: str, data: dict) -> None:
     text = data["post_text"]
     entities = data.get("post_entities")
     has_button = data.get("include_button", False)
-
     reply_markup = _build_reply_markup(data)
 
-    if len(photos) == 1:
-        await bot.send_photo(
-            chat_id=channel_id,
-            photo=photos[0],
-            caption=text,
-            caption_entities=entities,
-            reply_markup=reply_markup,
-        )
-    else:
-        if len(text) <= _CAPTION_LIMIT_GROUP:
-            media = [
-                InputMediaPhoto(media=photos[0], caption=text, caption_entities=entities),
-                InputMediaPhoto(media=photos[1]),
-            ]
-            await bot.send_media_group(chat_id=channel_id, media=media)
-            if has_button:
-                await bot.send_message(chat_id=channel_id, text="\u200b", reply_markup=reply_markup)
-        else:
-            # Text > 1024: attach to first photo as single, send second separately
-            await bot.send_photo(
-                chat_id=channel_id,
-                photo=photos[0],
-                caption=text,
-                caption_entities=entities,
-                reply_markup=reply_markup,
-            )
-            await bot.send_photo(chat_id=channel_id, photo=photos[1])
+    async def send_photo(**kwargs):
+        await bot.send_photo(chat_id=channel_id, **kwargs)
+
+    async def send_media_group(**kwargs):
+        await bot.send_media_group(chat_id=channel_id, **kwargs)
+
+    async def send_message(**kwargs):
+        await bot.send_message(chat_id=channel_id, **kwargs)
+
+    await emit_post(
+        photos=photos,
+        text=text,
+        entities=entities,
+        has_button=has_button,
+        reply_markup=reply_markup,
+        send_photo=send_photo,
+        send_media_group=send_media_group,
+        send_message=send_message,
+        is_preview=False,
+    )
 
 
 # ── /start ──────────────────────────────────────────────
@@ -333,12 +361,12 @@ async def on_button_yes(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     await state.update_data(include_button=True)
 
+    await callback.answer()
     if data.get("btn_url") is None:
         await callback.message.edit_text("🔗 Отправь ссылку для кнопки:")
         await state.set_state(PostForm.waiting_button_url)
     else:
         await send_preview(callback.message, state)
-    await callback.answer()
 
 
 @router.message(PostForm.waiting_button_url, F.text)
@@ -364,9 +392,9 @@ async def on_button_url_invalid(message: Message) -> None:
 async def on_button_no(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
         return
+    await callback.answer()
     await state.update_data(include_button=False)
     await send_preview(callback.message, state)
-    await callback.answer()
 
 
 # ── Предпросмотр: кнопки ───────────────────────────────
@@ -434,12 +462,12 @@ async def on_toggle_button(callback: CallbackQuery, state: FSMContext) -> None:
     new_value = not data.get("include_button", False)
     await state.update_data(include_button=new_value)
 
+    await callback.answer()
     if new_value and data.get("btn_url") is None:
         await callback.message.answer("🔗 Отправь ссылку для кнопки:")
         await state.set_state(PostForm.waiting_button_url)
     else:
         await send_preview(callback.message, state)
-    await callback.answer()
 
 
 @router.callback_query(PostForm.preview, F.data == "edit_photo")
@@ -538,8 +566,8 @@ async def on_edit_second_photo(message: Message, state: FSMContext) -> None:
 async def on_edit_go_to_preview(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
         return
-    await send_preview(callback.message, state)
     await callback.answer()
+    await send_preview(callback.message, state)
 
 
 # ── Редактирование текста ───────────────────────────────
