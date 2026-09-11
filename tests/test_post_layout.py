@@ -1,4 +1,4 @@
-from post_layout import CaptionMode, plan_post_layout, utf16_len
+from post_layout import CaptionMode, plan_post_layout, split_preview_notice, utf16_len
 
 
 def test_utf16_len_counts_emoji_as_telegram_does() -> None:
@@ -92,3 +92,22 @@ def test_recap_from_hang_must_split() -> None:
     layout = plan_post_layout(n_photos=1, text=text, has_button=True)
     assert layout.caption_mode is CaptionMode.SPLIT
     assert layout.button_on == "text"
+    notice = split_preview_notice(text)
+    over = utf16_len(text) - 1024
+    assert notice is not None
+    assert str(over) in notice
+    assert "двумя сообщениями" in notice
+    assert "склеить" in notice
+
+
+def test_no_split_notice_when_caption_fits() -> None:
+    assert split_preview_notice("hello") is None
+    assert split_preview_notice("a" * 1024) is None
+
+
+def test_split_notice_uses_russian_plural_for_overflow() -> None:
+    assert "1 символ" in split_preview_notice("a" * 1025)
+    assert "2 символа" in split_preview_notice("a" * 1026)
+    assert "7 символов" in split_preview_notice("a" * 1031)
+    assert "11 символов" in split_preview_notice("a" * 1035)
+    assert "21 символ" in split_preview_notice("a" * 1045)
